@@ -31,7 +31,12 @@ CUDADataPartition::CUDADataPartition(
   use_quantized_grad_(use_quantized_grad),
   cuda_hist_(cuda_hist) {
   CalcBlockDim(num_data_);
-  max_num_split_indices_blocks_ = grid_dim_;
+  // CalcBlockDim is re-run per leaf on smaller leaf sizes and can yield a
+  // larger grid than the full-data pass (up to MIN_NUM_SPLIT_INDICES_BLOCKS_
+  // DATA_PARTITION blocks, or one block more than the full-data grid once
+  // num_data exceeds 80 * SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION), so the
+  // block offset buffers must be sized for that worst case.
+  max_num_split_indices_blocks_ = std::max(grid_dim_, MIN_NUM_SPLIT_INDICES_BLOCKS_DATA_PARTITION) + 1;
   cur_num_leaves_ = 1;
   cuda_column_data_ = train_data->cuda_column_data();
 
@@ -259,7 +264,7 @@ void CUDADataPartition::UpdateTrainScore(const Tree* tree, double* scores) {
 }
 
 void CUDADataPartition::CalcBlockDim(const data_size_t num_data_in_leaf) {
-  const int min_num_blocks = num_data_in_leaf <= 100 ? 1 : 80;
+  const int min_num_blocks = num_data_in_leaf <= 100 ? 1 : MIN_NUM_SPLIT_INDICES_BLOCKS_DATA_PARTITION;
   const int num_blocks = std::max(min_num_blocks, (num_data_in_leaf + SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION - 1) / SPLIT_INDICES_BLOCK_SIZE_DATA_PARTITION);
   int split_indices_block_size_data_partition = (num_data_in_leaf + num_blocks - 1) / num_blocks - 1;
   CHECK_GT(split_indices_block_size_data_partition, 0);
@@ -293,7 +298,8 @@ void CUDADataPartition::ResetTrainingData(const Dataset* train_data, const int n
   if (num_data_ > old_num_data) {
     CalcBlockDim(num_data_);
     const int old_max_num_split_indices_blocks = max_num_split_indices_blocks_;
-    max_num_split_indices_blocks_ = grid_dim_;
+    // same worst-case sizing as in the constructor
+    max_num_split_indices_blocks_ = std::max(grid_dim_, MIN_NUM_SPLIT_INDICES_BLOCKS_DATA_PARTITION) + 1;
     if (max_num_split_indices_blocks_ > old_max_num_split_indices_blocks) {
       cuda_block_data_to_left_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
       cuda_block_data_to_right_offset_.Resize(static_cast<size_t>(max_num_split_indices_blocks_) + 1);
