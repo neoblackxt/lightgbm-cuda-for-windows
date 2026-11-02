@@ -95,11 +95,21 @@ void CUDABestSplitFinder::Init() {
   CUDASUCCESS_OR_FATAL(cudaStreamCreate(&cuda_streams_[1]));
   cuda_best_split_info_buffer_.Resize(8);
   if (use_global_memory_) {
-    cuda_feature_hist_grad_buffer_.Resize(static_cast<size_t>(num_total_bin_));
-    cuda_feature_hist_hess_buffer_.Resize(static_cast<size_t>(num_total_bin_));
+    Log::Warning(
+        "Features with more than %d bins force the global-memory split-finding path, "
+        "which is known to produce incorrect trees (and can crash) when such features "
+        "are heavily zero-inflated. Prefer max_bin <= 255 with device_type=cuda "
+        "for guaranteed CPU-equivalent results.",
+        NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER);
+    // The global-memory split-find kernels index these buffers as
+    // [hist_offset * 2 + bin), so they need 2 * num_total_bin_ elements;
+    // sizing them at num_total_bin_ caused out-of-bounds writes whenever any
+    // feature had more than NUM_THREADS_PER_BLOCK_BEST_SPLIT_FINDER bins.
+    cuda_feature_hist_grad_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
+    cuda_feature_hist_hess_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
     if (has_categorical_feature_) {
-      cuda_feature_hist_stat_buffer_.Resize(static_cast<size_t>(num_total_bin_));
-      cuda_feature_hist_index_buffer_.Resize(static_cast<size_t>(num_total_bin_));
+      cuda_feature_hist_stat_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
+      cuda_feature_hist_index_buffer_.Resize(static_cast<size_t>(num_total_bin_) * 2);
     }
   }
 
