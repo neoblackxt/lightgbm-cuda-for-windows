@@ -30,6 +30,24 @@ NCCL 官方没有 Windows 发行版，导致 Windows 上无法编译 CUDA 版。
 | `src/treelearner/cuda/cuda_single_gpu_tree_learner.cpp` | `std::max(..., 1UL)` → 两侧显式 `static_cast<size_t>` | Win64 上 `size_t`(64位) 与 `unsigned long`(32位) 推导歧义，新版 MSVC 报错 |
 | `external_libs/fmt` 子模块 | `format.h` 中 `U"\x9999999a..."` char32_t 字面量改为数值相同的整数数组 | nvcc 的 EDG 前端拒绝大值 char32_t 字面量（MSVC 无此限制） |
 
+## 上游 CUDA 正确性修复（max_bin > 255 领地，v4.7.0.99-cuda13.3-r3 起）
+
+上游 main 在任一特征 `num_bin > 256`（即 `max_bin > 255`，触发
+GlobalMemory 分裂搜寻路径）时存在多个缺陷，补丁序列为
+`patches/0001-…scratch-buffers…` ~ `0004-…stale-nu…`（`git format-patch` 生成，
+在上游修复前每次 rebase 新基线都要重放）：
+
+| 补丁 | 缺陷 | 症状 |
+|---|---|---|
+| `0001` scratch 缓冲 | GM 分裂搜寻内核按 `hist_offset*2+bin` 索引，但缓冲只分配 `num_total_bin` | 越界写：撞未映射页→illegal memory access（[#6512](https://github.com/microsoft/LightGBM/issues/6512)）；落对齐垫区→**静默污染**（退化成 1~3 叶树） |
+| `0002` 块偏移缓冲 | 每叶重算的 `CalcBlockDim` grid 可超过全量值（小叶子最多 80 块） | `PrepareOffset` 越界写 |
+| `0003` FixHistogram 丢 bin | 一线程一 bin 的修正内核丢弃 512 以上的 bin | `max_bin ≥ 512` 时直方图垃圾（RMSE ~5e38、崩溃） |
+| `0004` 候选选择 | 跨步增益循环保留"最后合格者"而非线程最优；数值内核不重置 `num_cat_threshold` | 分裂阈值选错；陈旧字段诱发类别位图路径的间歇性主机崩溃 |
+
+**遗留**（未修，运行时已加警告）：重度**零膨胀**特征 + `max_bin > 255` 时，
+大叶子（直方图减法）的直方图可与实际路由数据错位，产生空叶链退化树，
+偶发主机侧崩溃。`max_bin ≤ 255` 完全不受影响，与 CPU 逐位一致。
+
 ## 以后如何复用
 
 上游更新后（`git pull`）重新打补丁：

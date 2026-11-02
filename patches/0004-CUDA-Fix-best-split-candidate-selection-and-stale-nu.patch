@@ -1,0 +1,109 @@
+From 62ff2f781beee6365b74bd221af14a97cb4ae5f6 Mon Sep 17 00:00:00 2001
+From: Neo Black <neoblackxt@outlook.com>
+Date: Mon, 2 Nov 2026 15:43:32 +0800
+Subject: [PATCH 4/4] [CUDA] Fix best-split candidate selection and stale
+ num_cat_threshold
+
+The global-memory split-find kernels iterate bins strided across
+threads, but the gain loops kept overwriting local_gain/threshold on
+every candidate that merely cleared min_gain_shift, so each thread
+retained its LAST qualifying bin instead of its BEST one (the
+categorical kernel also let the second direction clobber better
+candidates from the first). Any feature with more than 256 bins could
+therefore pick a wrong split threshold. Only accept strictly better
+candidates, which also matches the CPU first-best tie-breaking.
+
+Additionally, the numeric split kernels never wrote num_cat_threshold,
+leaving whatever the buffer last held; a stale non-zero value made the
+host take the categorical-bitset path on a numeric split and crash with
+an intermittent host-side access violation. Zero the field in all three
+numeric kernel variants (shared, discretized, global-memory).
+---
+ .../cuda/cuda_best_split_finder.cu            | 22 ++++++++++++++-----
+ 1 file changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/src/treelearner/cuda/cuda_best_split_finder.cu b/src/treelearner/cuda/cuda_best_split_finder.cu
+index fb359fb5..5a09aac0 100644
+--- a/src/treelearner/cuda/cuda_best_split_finder.cu
++++ b/src/treelearner/cuda/cuda_best_split_finder.cu
+@@ -152,6 +152,9 @@ __device__ void FindBestSplitsForLeafKernelInner(
+   const double min_gain_shift = parent_gain + min_gain_to_split;
+ 
+   cuda_best_split_info->is_valid = false;
++  // numeric splits must not inherit a stale num_cat_threshold from buffer
++  // memory, or the host may take the categorical-bitset path on them
++  cuda_best_split_info->num_cat_threshold = 0;
+ 
+   hist_t local_grad_hist = 0.0f;
+   hist_t local_hess_hist = 0.0f;
+@@ -353,6 +356,7 @@ __device__ void FindBestSplitsDiscretizedForLeafKernelInner(
+   const double min_gain_shift = parent_gain + min_gain_to_split;
+ 
+   cuda_best_split_info->is_valid = false;
++  cuda_best_split_info->num_cat_threshold = 0;
+ 
+   ACC_HIST_TYPE local_grad_hess_hist = 0;
+   double local_gain = 0.0f;
+@@ -1090,6 +1094,9 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
+   const double min_gain_shift = parent_gain + min_gain_to_split;
+ 
+   cuda_best_split_info->is_valid = false;
++  // numeric splits must not inherit a stale num_cat_threshold from buffer
++  // memory, or the host may take the categorical-bitset path on them
++  cuda_best_split_info->num_cat_threshold = 0;
+   double local_gain = 0.0f;
+   bool threshold_found = false;
+   uint32_t threshold_value = 0;
+@@ -1182,7 +1189,9 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
+             sum_right_hessian, lambda_l1,
+             lambda_l2, path_smooth, left_count, right_count, parent_output);
+           // gain with split is worse than without split
+-          if (current_gain > min_gain_shift) {
++          // each thread strided over multiple bins must keep its BEST
++          // candidate, not the last one that merely clears the bar
++          if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
+             local_gain = current_gain - min_gain_shift;
+             threshold_value = static_cast<uint32_t>(task->num_bin - 2 - bin);
+             threshold_found = true;
+@@ -1210,7 +1219,8 @@ __device__ void FindBestSplitsForLeafKernelInner_GlobalMemory(
+             sum_right_hessian, lambda_l1,
+             lambda_l2, path_smooth, left_count, right_count, parent_output);
+           // gain with split is worse than without split
+-          if (current_gain > min_gain_shift) {
++          // keep the thread's best candidate, not the last qualifying one
++          if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
+             local_gain = current_gain - min_gain_shift;
+             threshold_value = (task->na_as_missing && task->mfb_offset == 1) ?
+               bin : static_cast<uint32_t>(bin + task->mfb_offset);
+@@ -1358,7 +1368,7 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
+               sum_other_gradient, sum_other_hessian, grad,
+               hess + kEpsilon, lambda_l1,
+               l2, path_smooth, other_count, cnt, parent_output);
+-            if (current_gain > min_gain_shift) {
++            if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
+               best_threshold = bin;
+               local_gain = current_gain - min_gain_shift;
+               threshold_found = true;
+@@ -1471,7 +1481,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
+           sum_right_hessian, lambda_l1,
+           l2, path_smooth, left_count, right_count, parent_output);
+         // gain with split is worse than without split
+-        if (current_gain > min_gain_shift) {
++        // keep the thread's best candidate across both directions
++        if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
+           local_gain = current_gain - min_gain_shift;
+           threshold_found = true;
+           best_dir = 1;
+@@ -1510,7 +1521,8 @@ __device__ void FindBestSplitsForLeafKernelCategoricalInner_GlobalMemory(
+           sum_right_hessian, lambda_l1,
+           l2, path_smooth, left_count, right_count, parent_output);
+         // gain with split is worse than without split
+-        if (current_gain > min_gain_shift) {
++        // keep the thread's best candidate across both directions
++        if (current_gain > min_gain_shift && current_gain - min_gain_shift > local_gain) {
+           local_gain = current_gain - min_gain_shift;
+           threshold_found = true;
+           best_dir = -1;
+-- 
+2.55.0.windows.5
+

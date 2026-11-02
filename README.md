@@ -19,6 +19,18 @@
 > | CUDA (recommended) | `lightgbm.exe`, `lib_lightgbm.dll`, `lightgbm-*.py3-none-win_amd64.whl` | `cpu`, `cuda` |
 > | All-in-one | `all-lightgbm.exe`, `all-lib_lightgbm.dll`, `lightgbm-*+all-*.whl` | `cpu`, `cuda`, `gpu` (OpenCL) |
 >
+> ### `max_bin` note (fixes in `-r3` releases)
+>
+> Upstream CUDA has several bugs that trigger when **any feature has more
+> than 256 bins** (`max_bin > 255`): illegal memory access that kills the
+> process, silently corrupted trees, and garbage outputs for `max_bin ≥ 512`.
+> `-r3` releases fix all of these (verified against the CPU learner; root
+> cause reported in
+> [#6512](https://github.com/microsoft/LightGBM/issues/6512)). With heavily
+> zero-inflated features and `max_bin > 255` a further upstream bug remains
+> (a warning is printed when the risky path is taken). For bit-for-bit
+> CPU-equivalent results, keep `max_bin ≤ 255` (the default).
+>
 > ### Installation
 >
 > Grab the assets from the [latest release](https://github.com/neoblackxt/lightgbm-cuda-no-nccl-for-windows/releases/latest)
