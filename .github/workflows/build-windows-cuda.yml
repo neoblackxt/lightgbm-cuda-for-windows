@@ -334,4 +334,4 @@ jobs:
 
             Wheels carry a local version tag: `+all` marks the CPU+OpenCL+CUDA variant.
 
-            **Full Changelog**: [${{ github.ref_name }}](https://github.com/neoblackxt/lightgbm-cuda-no-nccl-for-windows/commits/${{ github.ref_name }})
+            **Full Changelog**: [${{ github.ref_name }}](https://github.com/neoblackxt/lightgbm-cuda-for-windows/commits/${{ github.ref_name }})

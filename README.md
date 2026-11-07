@@ -12,7 +12,7 @@
 > See `patches/README.md` (English) and `patches/README.zh.md` (中文) for details.
 >
 > **Two prebuilt variants** are published by GitHub Actions on every `v*` tag
-> (see the [Releases](https://github.com/neoblackxt/lightgbm-cuda-no-nccl-for-windows/releases) page):
+> (see the [Releases](https://github.com/neoblackxt/lightgbm-cuda-for-windows/releases) page):
 >
 > | Variant | Files | `device` options |
 > |---|---|---|
@@ -33,7 +33,7 @@
 >
 > ### Installation
 >
-> Grab the assets from the [latest release](https://github.com/neoblackxt/lightgbm-cuda-no-nccl-for-windows/releases/latest)
+> Grab the assets from the [latest release](https://github.com/neoblackxt/lightgbm-cuda-for-windows/releases/latest)
 > (Windows 10/11 x64; Python 3.9+ for the wheels).
 >
 > **Python** — pick ONE wheel:
@@ -49,7 +49,7 @@
 > e.g. with pip directly from a release URL:
 >
 > ```bash
-> pip install https://github.com/neoblackxt/lightgbm-cuda-no-nccl-for-windows/releases/download/v4.7.0.99-cuda13.3/lightgbm-4.7.0.99+all-py3-none-win_amd64.whl
+> pip install https://github.com/neoblackxt/lightgbm-cuda-for-windows/releases/download/v4.7.0.99-cuda13.3/lightgbm-4.7.0.99+all-py3-none-win_amd64.whl
 > ```
 >
 > - If the official `lightgbm` is already installed, uninstall it first
