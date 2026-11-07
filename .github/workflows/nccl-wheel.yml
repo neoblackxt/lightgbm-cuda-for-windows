@@ -192,32 +192,59 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install dist/lightgbm-*+nccl-*.whl
-          python - <<'PY'
-          from importlib.metadata import version
-          from pathlib import Path
-          import numpy as np
-          import lightgbm as lgb
-
-          assert version("lightgbm").endswith("+nccl"), version("lightgbm")
-          dll = Path(lgb.basic._LIB._name)
-          assert (dll.parent / "nccl.dll").is_file(), "nccl.dll missing from installed wheel"
-          rng = np.random.RandomState(0)
-          X = rng.randn(2000, 10).astype(np.float32)
-          y = (X[:, 0] > 0).astype(np.int32)
-          bst = lgb.train({"objective": "binary", "num_leaves": 15, "verbose": -1},
-                          lgb.Dataset(X, label=y), num_boost_round=10)
-          assert bst.predict(X[:10]).shape == (10,)
-          print(f"LightGBM library: {dll}")
-          print("CPU training and +nccl metadata/payload checks passed")
-          PY
-          lib=$(python -c 'import lightgbm as lgb; print(lgb.basic._LIB._name)')
-          dumpbin /nologo /dependents "$lib" > nccl-dependents.txt
-          if ! grep -iF 'nccl.dll' nccl-dependents.txt; then
-            cat nccl-dependents.txt
-            echo "FAIL: lib_lightgbm.dll does not import nccl.dll; real NCCL was not linked"
+          if ! python -m pip install dist/lightgbm-*+nccl-*.whl; then
+            echo "FAIL: could not install the +nccl wheel"
             exit 1
           fi
+          if python - <<'PY'
+          import os
+          import sys
+          import traceback
+
+          def finish(code):
+              sys.stdout.flush()
+              sys.stderr.flush()
+              # Bypass Python finalization so the shell receives the check result.
+              os._exit(code)
+
+          try:
+              import ctypes
+              from importlib.metadata import version
+              from pathlib import Path
+              import numpy as np
+              import lightgbm as lgb
+
+              assert version("lightgbm").endswith("+nccl"), version("lightgbm")
+              dll = Path(lgb.basic._LIB._name)
+              assert (dll.parent / "nccl.dll").is_file(), "nccl.dll missing from installed wheel"
+              kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+              kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+              kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+              if not kernel32.GetModuleHandleW("nccl.dll"):
+                  raise RuntimeError("lib_lightgbm.dll did not load nccl.dll; real NCCL was not linked")
+              rng = np.random.RandomState(0)
+              X = rng.randn(2000, 10).astype(np.float32)
+              y = (X[:, 0] > 0).astype(np.int32)
+              bst = lgb.train({"objective": "binary", "num_leaves": 15, "verbose": -1},
+                              lgb.Dataset(X, label=y), num_boost_round=10)
+              assert bst.predict(X[:10]).shape == (10,)
+          except BaseException:
+              traceback.print_exc()
+              print("FAIL: +nccl wheel smoke test failed", file=sys.stderr)
+              finish(1)
+
+          print(f"LightGBM library: {dll}")
+          print("CPU training, real-NCCL loading, and +nccl metadata/payload checks passed")
+          finish(0)
+          PY
+          then
+            echo "PASS: +nccl wheel smoke test exited 0"
+          else
+            status=$?
+            echo "FAIL: +nccl wheel smoke test exited $status without a clean status"
+            exit "$status"
+          fi
+          exit 0
 
       - uses: actions/upload-artifact@v7
         with:
