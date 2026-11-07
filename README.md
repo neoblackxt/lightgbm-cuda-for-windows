@@ -1,15 +1,20 @@
 <img src=https://github.com/lightgbm-org/LightGBM/blob/main/docs/logo/LightGBM_logo_black_text.svg width=300 />
 
 > [!IMPORTANT]
-> ## Windows CUDA build (no NCCL)
+> ## Windows CUDA builds for LightGBM
 >
 > A community fork of LightGBM carrying a minimal patch set that makes
-> **single-GPU CUDA builds work on Windows**. Upstream requires the NCCL
-> library for *all* CUDA builds since #6138, but NCCL has no Windows
-> distribution. Since every NCCL call site only runs with `num_gpu > 1`,
-> we bundle a tiny NCCL **stub** library (`cmake/nccl-stub/`) that satisfies
-> the linker and aborts loudly if ever invoked — no upstream code is removed.
-> See `patches/README.md` (English) and `patches/README.zh.md` (中文) for details.
+> **CUDA builds work on Windows**: single-GPU training is stable and shipped
+> as prebuilt binaries on every release, and **multi-GPU training
+> (`num_gpu > 1`) is available experimentally** through a real NCCL built on
+> Windows (see the experimental section below).
+>
+> Why the patch set exists: upstream requires the NCCL library for *all*
+> CUDA builds since #6138, but NCCL has no Windows distribution. Release
+> builds bundle a tiny NCCL **stub** library (`cmake/nccl-stub/`) that
+> satisfies the linker and aborts loudly if ever invoked — no upstream code
+> is removed. See `patches/README.md` (English) and `patches/README.zh.md`
+> (中文) for details.
 >
 > **Two prebuilt variants** are published by GitHub Actions on every `v*` tag
 > (see the [Releases](https://github.com/neoblackxt/lightgbm-cuda-for-windows/releases) page):
@@ -30,6 +35,49 @@
 > zero-inflated features and `max_bin > 255` a further upstream bug remains
 > (a warning is printed when the risky path is taken). For bit-for-bit
 > CPU-equivalent results, keep `max_bin ≤ 255` (the default).
+>
+> ### Experimental: multi-GPU (`num_gpu > 1`) via a real NCCL
+>
+> Branch [`experiment/nccl-multigpu`](https://github.com/neoblackxt/lightgbm-cuda-for-windows/tree/experiment/nccl-multigpu)
+> links a **real NCCL** instead of the stub. NCCL's official source tree
+> (`v2.32.3-1`) already contains a complete Windows OS layer; the community
+> mirror [WyvernTKC/nccl-windows](https://github.com/WyvernTKC/nccl-windows)
+> adds only a 6-commit build recipe and fixes on top (two of them from
+> NVIDIA's own `staging` branch). Provenance, build recipe, pitfalls and
+> validation log: [`patches/EXPERIMENTAL-NCCL.md`](https://github.com/neoblackxt/lightgbm-cuda-for-windows/blob/experiment/nccl-multigpu/patches/EXPERIMENTAL-NCCL.md).
+>
+> **Validated so far** (single RTX 4090, WDDM, CUDA 13.3 — combinations the
+> port author had not tested): single-rank NCCL collectives are bit-exact,
+> and LightGBM's whole `num_gpu > 1` path (`NCCLGBDT`) runs end-to-end
+> through a single-rank NCCL communicator, matching the CPU learner to 6
+> decimals at `max_bin = 255`.
+>
+> **Not yet validated: the cross-GPU transport itself** (NVLink/PCIe ring,
+> 2+ ranks). That needs multi-GPU hardware — which is where the community
+> comes in:
+>
+> ```bash
+> pip install --force-reinstall https://github.com/neoblackxt/lightgbm-cuda-for-windows/releases/download/nccl-exp1/lightgbm-4.7.0.99+nccl-py3-none-win_amd64.whl
+> ```
+>
+> ```python
+> import lightgbm as lgb
+> params = {"objective": "regression", "device": "cuda", "num_gpu": 2,
+>           "max_bin": 255, "seed": 7, "verbose": 1}
+> # 2-GPU machine: expect "Using GPU devices 0,1"; quality should be close
+> #   to num_gpu=1 / CPU on the same data.
+> # 1-GPU machine: safely clamps ("Only 1 GPUs available, using num_gpu = 1")
+> #   and still runs the full multi-GPU code path — a decent smoke test.
+> ```
+>
+> If you have 2+ NVIDIA GPUs on Windows, please try it and report your setup
+> (GPU models, driver, WDDM or TCC), whether training completes, quality vs
+> `num_gpu=1`, and round time vs `num_gpu=1`, in
+> [the community results issue](https://github.com/neoblackxt/lightgbm-cuda-for-windows/issues/2).
+>
+> Known limits of the upstream multi-GPU path: bagging is not supported
+> (`NCCLGBDT` aborts with "Bagging is not supported"); leave
+> `NCCL_ENQUEUE_REARCH_ENABLE` and `NCCL_SINGLE_PROC_MEM_REG_ENABLE` unset.
 >
 > ### Installation
 >
