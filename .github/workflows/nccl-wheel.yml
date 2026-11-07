@@ -25,7 +25,7 @@ concurrency:
 env:
   # WyvernTKC/nccl-windows mirror pin (NVIDIA v2.32.3-1 + 6-commit delta).
   # The delta vs the official tag is verified in-job before anything is built.
-  NCCL_MIRROR_SHA: '9edb3bdbb7e59bfbdb37a4ba25401e955279ac1e'
+  NCCL_MIRROR_SHA: '9edb3bdbf93442b78a2d5324af3b46bc69e4f078'
   NCCL_OFFICIAL_TAG: 'v2.32.3-1'
   NCCL_ARCHES: '75;80;86;89;120'
   CUDAARCHS: '75;80;86;89;120'
