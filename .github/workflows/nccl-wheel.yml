@@ -34,11 +34,12 @@ env:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Activate MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -223,6 +224,7 @@ jobs:
           name: nccl-wheel
           path: dist/lightgbm-*+nccl-*.whl
           if-no-files-found: error
+          compression-level: 0
 
       - name: Attach wheel to release (optional)
         if: github.event_name == 'workflow_dispatch' && inputs.attach_to_release != ''
