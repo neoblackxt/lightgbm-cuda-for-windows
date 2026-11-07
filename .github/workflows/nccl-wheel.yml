@@ -27,6 +27,7 @@ env:
   # The delta vs the official tag is verified in-job before anything is built.
   NCCL_MIRROR_SHA: '9edb3bdbf93442b78a2d5324af3b46bc69e4f078'
   NCCL_OFFICIAL_TAG: 'v2.32.3-1'
+  NCCL_OFFICIAL_SHA: '12df1a11afad322be5a204a2db890161cbf8131d'
   NCCL_ARCHES: '75;80;86;89;120'
   CUDAARCHS: '75;80;86;89;120'
 
@@ -87,14 +88,49 @@ jobs:
           fi
           git remote add nvidia https://github.com/NVIDIA/nccl
           git fetch --quiet --depth 1 nvidia "refs/tags/$NCCL_OFFICIAL_TAG"
-          # The delta vs the official tag must touch ONLY the known files
-          # (verified locally 2026-11-07: 6 commits, 7 files, +117/-21).
-          allowed="README.md|src/debug.cc|src/device/symmetric/reduce_scatter.cuh|src/group.cc|src/include/sym_kernels.h|src/os/windows.cc|src/proxy.cc"
-          git diff --name-only FETCH_HEAD HEAD | grep -vE "^(${allowed})$" > unexpected.txt && {
-            echo "FAIL: unexpected files in mirror delta:"; cat unexpected.txt; exit 1
-          } || true
-          n=$(git diff FETCH_HEAD HEAD | grep -cE '^(\+|-)[^+-]')
-          echo "mirror delta vs official $NCCL_OFFICIAL_TAG verified (changed lines ~$n, allowlist ok)"
+          official=$(git rev-parse 'FETCH_HEAD^{commit}')
+          if [ "$official" != "$NCCL_OFFICIAL_SHA" ]; then
+            echo "FAIL: official tag moved: $official (expected $NCCL_OFFICIAL_SHA)"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$official" HEAD; then
+            echo "FAIL: official $NCCL_OFFICIAL_TAG is not an ancestor of the mirror HEAD"
+            exit 1
+          fi
+          # The mirror delta must be nonempty and touch only these exact paths.
+          allowed=(
+            README.md
+            src/debug.cc
+            src/device/symmetric/reduce_scatter.cuh
+            src/group.cc
+            src/include/sym_kernels.h
+            src/os/windows.cc
+            src/proxy.cc
+          )
+          git diff --name-only -z "$official" HEAD > delta-files.z
+          delta_files=()
+          while IFS= read -r -d '' path; do
+            delta_files+=("$path")
+          done < delta-files.z
+          if [ "${#delta_files[@]}" -eq 0 ]; then
+            echo "FAIL: mirror delta vs official $NCCL_OFFICIAL_TAG is empty"
+            exit 1
+          fi
+          unexpected=()
+          for path in "${delta_files[@]}"; do
+            for allowed_path in "${allowed[@]}"; do
+              if [ "$path" = "$allowed_path" ]; then
+                continue 2
+              fi
+            done
+            unexpected+=("$path")
+          done
+          if [ "${#unexpected[@]}" -gt 0 ]; then
+            echo "FAIL: unexpected files in mirror delta:"
+            printf '  %s\n' "${unexpected[@]}"
+            exit 1
+          fi
+          echo "mirror delta vs official $NCCL_OFFICIAL_TAG verified (${#delta_files[@]} files, exact allowlist)"
 
       - name: Restore NCCL build cache
         id: cache-nccl
@@ -108,10 +144,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Git Bash resolves link.exe to coreutils; CUDA try-compile needs MSVC.
           cmake -S nccl-src -B build-nccl -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CUDA_ARCHITECTURES="${NCCL_ARCHES}" \
             -DCMAKE_CUDA_COMPILER="$CUDA_PATH/bin/nvcc.exe" \
+            -DCMAKE_LINKER:FILEPATH="${VCToolsInstallDir}bin/Hostx64/x64/link.exe" \
             -DCMAKE_INSTALL_PREFIX=install-nccl
           cmake --build build-nccl --parallel --target install
 
@@ -130,7 +168,15 @@ jobs:
           SKBUILD_BUILD_DIR: ${{ github.workspace }}/build-lgbm-nccl
         run: |
           set -euo pipefail
-          export NCCL_ROOT="$PWD/install-nccl"
+          nccl_root="$PWD/install-nccl"
+          for required in include/nccl.h lib/nccl.lib bin/nccl.dll; do
+            if [ ! -f "$nccl_root/$required" ]; then
+              echo "FAIL: missing NCCL install artifact: $nccl_root/$required"
+              exit 1
+            fi
+          done
+          # Native Windows CMake does not resolve Git Bash's /d/... paths.
+          export NCCL_ROOT="$(cygpath -m "$nccl_root")"
           export CUDACXX="$CUDA_PATH/bin/nvcc.exe"
           python -m pip install --upgrade pip build scikit-build-core ninja
           sh build-python.sh bdist_wheel --cuda --no-isolation
@@ -141,6 +187,64 @@ jobs:
         run: |
           set -euo pipefail
           NCCL_DLL=install-nccl/bin/nccl.dll python scripts/nccl_wheel.py dist
+
+      - name: Smoke test +nccl wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! python -m pip install dist/lightgbm-*+nccl-*.whl; then
+            echo "FAIL: could not install the +nccl wheel"
+            exit 1
+          fi
+          if python - <<'PY'
+          import os
+          import sys
+          import traceback
+
+          def finish(code):
+              sys.stdout.flush()
+              sys.stderr.flush()
+              # Bypass Python finalization so the shell receives the check result.
+              os._exit(code)
+
+          try:
+              import ctypes
+              from importlib.metadata import version
+              from pathlib import Path
+              import numpy as np
+              import lightgbm as lgb
+
+              assert version("lightgbm").endswith("+nccl"), version("lightgbm")
+              dll = Path(lgb.basic._LIB._name)
+              assert (dll.parent / "nccl.dll").is_file(), "nccl.dll missing from installed wheel"
+              kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+              kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+              kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+              if not kernel32.GetModuleHandleW("nccl.dll"):
+                  raise RuntimeError("lib_lightgbm.dll did not load nccl.dll; real NCCL was not linked")
+              rng = np.random.RandomState(0)
+              X = rng.randn(2000, 10).astype(np.float32)
+              y = (X[:, 0] > 0).astype(np.int32)
+              bst = lgb.train({"objective": "binary", "num_leaves": 15, "verbose": -1},
+                              lgb.Dataset(X, label=y), num_boost_round=10)
+              assert bst.predict(X[:10]).shape == (10,)
+          except BaseException:
+              traceback.print_exc()
+              print("FAIL: +nccl wheel smoke test failed", file=sys.stderr)
+              finish(1)
+
+          print(f"LightGBM library: {dll}")
+          print("CPU training, real-NCCL loading, and +nccl metadata/payload checks passed")
+          finish(0)
+          PY
+          then
+            echo "PASS: +nccl wheel smoke test exited 0"
+          else
+            status=$?
+            echo "FAIL: +nccl wheel smoke test exited $status without a clean status"
+            exit "$status"
+          fi
+          exit 0
 
       - uses: actions/upload-artifact@v7
         with:
