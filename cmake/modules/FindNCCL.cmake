@@ -76,9 +76,22 @@ mark_as_advanced(
 
 if(NCCL_FOUND AND NOT TARGET NCCL::NCCL)
   add_library(NCCL::NCCL ${_nccl_lib_type} IMPORTED)
-  set_target_properties(NCCL::NCCL PROPERTIES
-    IMPORTED_LOCATION "${NCCL_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${NCCL_INCLUDE_DIR}")
+  if(WIN32 AND _nccl_lib_type STREQUAL "SHARED")
+    # On Windows the located .lib is the import library; the generator
+    # requires it in IMPORTED_IMPLIB (IMPORTED_LOCATION would be the DLL,
+    # which is a runtime deployment artifact, not a link input).
+    set_target_properties(NCCL::NCCL PROPERTIES
+      IMPORTED_IMPLIB "${NCCL_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${NCCL_INCLUDE_DIR}")
+    if(EXISTS "$ENV{NCCL_ROOT}/bin/nccl.dll")
+      set_target_properties(NCCL::NCCL PROPERTIES
+        IMPORTED_LOCATION "$ENV{NCCL_ROOT}/bin/nccl.dll")
+    endif()
+  else()
+    set_target_properties(NCCL::NCCL PROPERTIES
+      IMPORTED_LOCATION "${NCCL_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${NCCL_INCLUDE_DIR}")
+  endif()
 endif()
 
 unset(_nccl_lib_type)

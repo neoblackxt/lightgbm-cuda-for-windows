@@ -240,7 +240,27 @@ if(__INTEGRATE_OPENCL)
 endif()
 
 if(USE_CUDA)
+    if(WIN32 AND NOT DEFINED BUILD_WITH_SHARED_NCCL)
+      # Experimental (real NCCL on Windows): prefer the shared nccl.lib import
+      # library. nccl_static.lib objects are built with /MT, which collides
+      # with the /MD runtime required for the python extension (LNK2038), and
+      # the static link additionally needs nccl_device.lib for the device
+      # kernel tables. Shared linking sidesteps both; the cost is deploying
+      # nccl.dll alongside lib_lightgbm.dll (see patches/EXPERIMENTAL-NCCL.md).
+      set(BUILD_WITH_SHARED_NCCL ON)
+    endif()
     find_package(NCCL QUIET)
+    if(NCCL_FOUND AND WIN32)
+      # Experimental: linking a real NCCL on Windows (e.g. NVIDIA NCCL 2.32.x
+      # built from source, see patches/EXPERIMENTAL-NCCL.md). Single-GPU
+      # builds behave identically; num_gpu > 1 enters the NCCLGBDT path.
+      message(STATUS "NCCL found - linking REAL NCCL on Windows (multi-GPU experimental)")
+      # The bundled-stub branch adds its include dir globally so that every
+      # object (e.g. via cuda_utils.hu) can include <nccl.h>; mirror that for
+      # the real NCCL, whose include dir otherwise only reaches NCCL::NCCL
+      # linkers through the IMPORTED target.
+      include_directories(${NCCL_INCLUDE_DIR})
+    endif()
     if(NOT NCCL_FOUND)
       # NCCL has no official Windows distribution. Every NCCL call site in
       # LightGBM is only reached when num_gpu > 1 (Boosting::CreateBoosting),
