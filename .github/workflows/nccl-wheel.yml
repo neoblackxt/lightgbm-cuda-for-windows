@@ -107,10 +107,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Git Bash resolves link.exe to coreutils; CUDA try-compile needs MSVC.
           cmake -S nccl-src -B build-nccl -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CUDA_ARCHITECTURES="${NCCL_ARCHES}" \
             -DCMAKE_CUDA_COMPILER="$CUDA_PATH/bin/nvcc.exe" \
+            -DCMAKE_LINKER:FILEPATH="${VCToolsInstallDir}bin/Hostx64/x64/link.exe" \
             -DCMAKE_INSTALL_PREFIX=install-nccl
           cmake --build build-nccl --parallel --target install
 
