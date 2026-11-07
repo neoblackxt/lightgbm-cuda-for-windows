@@ -1,0 +1,157 @@
+name: Build +nccl experimental wheel
+
+# CI provenance for the experimental real-NCCL wheel (experiment/nccl-multigpu
+# branch). Builds NCCL from NVIDIA's official source (provenance-verified
+# against the pinned mirror commit), links LightGBM against it, and packages
+# the +nccl wheel. Trigger: manual dispatch, or tags 'nccl-exp*' (which do NOT
+# match the release workflow's 'v*' trigger).
+
+on:
+  workflow_dispatch:
+    inputs:
+      attach_to_release:
+        description: 'Release tag to attach/clobber the wheel onto (e.g. nccl-exp1); empty = artifact only'
+        default: ''
+  push:
+    tags: ['nccl-exp*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # WyvernTKC/nccl-windows mirror pin (NVIDIA v2.32.3-1 + 6-commit delta).
+  # The delta vs the official tag is verified in-job before anything is built.
+  NCCL_MIRROR_SHA: '9edb3bdbb7e59bfbdb37a4ba25401e955279ac1e'
+  NCCL_OFFICIAL_TAG: 'v2.32.3-1'
+  NCCL_ARCHES: '75;80;86;89;120'
+  CUDAARCHS: '75;80;86;89;120'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Activate MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Restore CUDA Toolkit cache
+        id: cache-cuda
+        uses: actions/cache/restore@v6
+        with:
+          path: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3
+          key: cuda-13.3.0-windows-x64-installed-v1
+
+      - name: Install CUDA Toolkit 13.3
+        if: steps.cache-cuda.outputs.cache-hit != 'true'
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '13.3.0'
+          method: local
+          use-github-cache: false
+
+      - name: Save CUDA Toolkit cache
+        if: steps.cache-cuda.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3
+          key: cuda-13.3.0-windows-x64-installed-v1
+        continue-on-error: true
+
+      - name: Set CUDA environment
+        shell: pwsh
+        run: |
+          $cuda = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3"
+          if (-not (Test-Path "$cuda\bin\nvcc.exe")) { throw "nvcc not found at $cuda" }
+          echo "CUDA_PATH=$cuda" >> $env:GITHUB_ENV
+          echo "$cuda\bin" >> $env:GITHUB_PATH
+
+      - name: Fetch NCCL sources with provenance verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/WyvernTKC/nccl-windows nccl-src
+          cd nccl-src
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$NCCL_MIRROR_SHA" ]; then
+            echo "FAIL: mirror HEAD moved: $head (expected $NCCL_MIRROR_SHA)"
+            exit 1
+          fi
+          git remote add nvidia https://github.com/NVIDIA/nccl
+          git fetch --quiet --depth 1 nvidia "refs/tags/$NCCL_OFFICIAL_TAG"
+          # The delta vs the official tag must touch ONLY the known files
+          # (verified locally 2026-11-07: 6 commits, 7 files, +117/-21).
+          allowed="README.md|src/debug.cc|src/device/symmetric/reduce_scatter.cuh|src/group.cc|src/include/sym_kernels.h|src/os/windows.cc|src/proxy.cc"
+          git diff --name-only FETCH_HEAD HEAD | grep -vE "^(${allowed})$" > unexpected.txt && {
+            echo "FAIL: unexpected files in mirror delta:"; cat unexpected.txt; exit 1
+          } || true
+          n=$(git diff FETCH_HEAD HEAD | grep -cE '^(\+|-)[^+-]')
+          echo "mirror delta vs official $NCCL_OFFICIAL_TAG verified (changed lines ~$n, allowlist ok)"
+
+      - name: Restore NCCL build cache
+        id: cache-nccl
+        uses: actions/cache/restore@v6
+        with:
+          path: install-nccl
+          key: nccl-${{ env.NCCL_MIRROR_SHA }}-cuda13.3-${{ env.NCCL_ARCHES }}-v1
+
+      - name: Build NCCL
+        if: steps.cache-nccl.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S nccl-src -B build-nccl -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES="${NCCL_ARCHES}" \
+            -DCMAKE_CUDA_COMPILER="$CUDA_PATH/bin/nvcc.exe" \
+            -DCMAKE_INSTALL_PREFIX=install-nccl
+          cmake --build build-nccl --parallel --target install
+
+      - name: Save NCCL cache
+        if: steps.cache-nccl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: install-nccl
+          key: nccl-${{ env.NCCL_MIRROR_SHA }}-cuda13.3-${{ env.NCCL_ARCHES }}-v1
+        continue-on-error: true
+
+      - name: Build LightGBM wheel (real NCCL)
+        shell: bash
+        env:
+          CMAKE_GENERATOR: Ninja
+          SKBUILD_BUILD_DIR: ${{ github.workspace }}/build-lgbm-nccl
+        run: |
+          set -euo pipefail
+          export NCCL_ROOT="$PWD/install-nccl"
+          export CUDACXX="$CUDA_PATH/bin/nvcc.exe"
+          python -m pip install --upgrade pip build scikit-build-core ninja
+          sh build-python.sh bdist_wheel --cuda --no-isolation
+          ls dist/
+
+      - name: Inject nccl.dll and retag wheel to +nccl
+        shell: bash
+        run: |
+          set -euo pipefail
+          NCCL_DLL=install-nccl/bin/nccl.dll python scripts/nccl_wheel.py dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nccl-wheel
+          path: dist/lightgbm-*+nccl-*.whl
+          if-no-files-found: error
+
+      - name: Attach wheel to release (optional)
+        if: github.event_name == 'workflow_dispatch' && inputs.attach_to_release != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.attach_to_release }}
+        run: |
+          gh release upload "$TAG" dist/lightgbm-*+nccl-*.whl --clobber
