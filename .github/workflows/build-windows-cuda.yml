@@ -1,4 +1,4 @@
-name: Build Windows CUDA (no NCCL)
+name: Build Windows CUDA
 
 # Builds two Windows variants and publishes them as prebuilt release assets on v* tags:
 #   cuda        - CPU + CUDA
